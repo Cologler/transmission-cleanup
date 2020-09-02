@@ -15,6 +15,10 @@ import shutil
 
 import transmissionrpc
 
+# encoding is required.
+# if we run this on synology task scheduler, by default sys.getdefaultencoding() is ascii.
+# we may get file names from `os.listdir(incomplete_dir)` with bad encoding
+# their did not match torrent.name, but we cannot remove them because they still need.
 assert sys.getdefaultencoding() == 'utf-8', 'encoding is not utf-8'
 
 class IncompleteItem:
