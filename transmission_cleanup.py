@@ -34,7 +34,7 @@ def collect_incomplete_items(incomplete_dir):
         IncompleteItem(incomplete_dir, x) for x in os.listdir(incomplete_dir)
     ]
 
-def cleanup(address, port, incomplete_dir):
+def cleanup(address, port, incomplete_dir, test: bool):
     exists_nodes = collect_incomplete_items(incomplete_dir)
 
     tc = transmissionrpc.Client(address, port)
@@ -46,18 +46,20 @@ def cleanup(address, port, incomplete_dir):
         if item.name not in names:
             if os.path.isfile(item.path):
                 try:
-                    os.unlink(item.path)
+                    if not test:
+                        os.unlink(item.path)
                     print('removed %s' % item.path)
                 except FileNotFoundError:
                     pass
             elif os.path.isdir(item.path):
                 try:
-                    shutil.rmtree(item.path)
+                    if not test:
+                        shutil.rmtree(item.path)
                     print('removed %s' % item.path)
                 except FileNotFoundError:
                     pass
 
-def load_conf():
+def load_conf(argv: List[str]):
     conf_path = os.path.expanduser(
         os.path.join('~', '.config', 'transmission_cleanup', 'config.json')
     )
@@ -77,7 +79,18 @@ def load_conf():
     if incomplete_dir is not None:
         conf_from_env['incomplete_dir'] = incomplete_dir
 
+    conf_from_argv = {}
+    try:
+        argv.remove('--test')
+        conf_from_argv['test'] = True
+    except ValueError:
+        conf_from_argv['test'] = False
+
+    if argv:
+        exit(f'unknown args: {conf_from_argv}')
+
     return collections.ChainMap(
+        conf_from_argv,
         conf_from_env,
         conf_from_json
     )
@@ -86,7 +99,7 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv
     try:
-        cleanup(**load_conf())
+        cleanup(**load_conf(argv[1:]))
     except: # pylint: disable=W0703
         traceback.print_exc()
         if sys.stderr.isatty(): input('wait for read...')
