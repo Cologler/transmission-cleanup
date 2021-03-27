@@ -96,7 +96,7 @@ class TransmissionHelper:
                 info_hash: str = compute_info_hash(tor_body)
             info_hash = info_hash.lower()
             if info_hash in info_hash_map:
-                dup_tor_map.setdefault(info_hash, [info_hash_map[info_hash]]).append(name)
+                dup_tor_map.setdefault(info_hash, [info_hash_map[info_hash]]).append(path)
             info_hash_map[info_hash] = path
         echo(f'read {len(info_hash_map)} torrents from torrents dir.')
 
