@@ -36,30 +36,33 @@ def collect_incomplete_items(incomplete_dir):
         IncompleteItem(incomplete_dir, x) for x in os.listdir(incomplete_dir)
     ]
 
-def do_cleanup_incompletedir(address, port, incomplete_dir, dryrun: bool):
-    exists_nodes = collect_incomplete_items(incomplete_dir)
+class TransmissionHelper:
+    def __init__(self, tc: transmissionrpc.Client) -> None:
+        self._tc = tc
 
-    tc = transmissionrpc.Client(address, port)
-    names = set()
-    for tor in tc.get_torrents():
-        names.add(tor.name)
+    def cleanup_incompletedir(self, incomplete_dir, dryrun: bool):
+        exists_nodes = collect_incomplete_items(incomplete_dir)
 
-    for item in exists_nodes:
-        if item.name not in names:
-            if os.path.isfile(item.path):
-                try:
-                    if not dryrun:
-                        os.unlink(item.path)
-                    print('removed %s' % item.path)
-                except FileNotFoundError:
-                    pass
-            elif os.path.isdir(item.path):
-                try:
-                    if not dryrun:
-                        shutil.rmtree(item.path)
-                    print('removed %s' % item.path)
-                except FileNotFoundError:
-                    pass
+        names = set()
+        for tor in self._tc.get_torrents():
+            names.add(tor.name)
+
+        for item in exists_nodes:
+            if item.name not in names:
+                if os.path.isfile(item.path):
+                    try:
+                        if not dryrun:
+                            os.unlink(item.path)
+                        print('removed %s' % item.path)
+                    except FileNotFoundError:
+                        pass
+                elif os.path.isdir(item.path):
+                    try:
+                        if not dryrun:
+                            shutil.rmtree(item.path)
+                        print('removed %s' % item.path)
+                    except FileNotFoundError:
+                        pass
 
 def load_conf(args: dict):
     conf_path = os.path.expanduser(
@@ -91,14 +94,16 @@ def load_conf(args: dict):
 class App:
     def __init__(self, dryrun: flag) -> None:
         self._conf = load_conf(dict(dryrun=dryrun))
+        address = self._conf['address']
+        port = self._conf['port']
+        self._tc = transmissionrpc.Client(address, port)
+        self._helper = TransmissionHelper(self._tc)
 
     def cleanup_incompletedir(self):
         '''
         cleanup the incomplete dir if any item did not exists in the transmission.
         '''
-        do_cleanup_incompletedir(
-            self._conf['address'],
-            self._conf['port'],
+        self._helper.cleanup_incompletedir(
             self._conf['incomplete_dir'],
             self._conf['dryrun']
         )
