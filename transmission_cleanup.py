@@ -12,8 +12,11 @@ import traceback
 import collections
 import json
 import shutil
+import hashlib
 
+import bencodepy
 import transmissionrpc
+from click import Context, echo
 from click_anno import click_app
 from click_anno.types import flag
 
@@ -36,6 +39,25 @@ def collect_incomplete_items(incomplete_dir):
         IncompleteItem(incomplete_dir, x) for x in os.listdir(incomplete_dir)
     ]
 
+def compute_info_hash(d: dict):
+    return hashlib.sha1(bencodepy.encode(d[b"info"])).hexdigest()
+
+def remove(path: str, dryrun: bool):
+    if os.path.isfile(path):
+        try:
+            if not dryrun:
+                os.unlink(path)
+            print('removed %s' % path)
+        except FileNotFoundError:
+            pass
+    elif os.path.isdir(path):
+        try:
+            if not dryrun:
+                shutil.rmtree(path)
+            print('removed %s' % path)
+        except FileNotFoundError:
+            pass
+
 class TransmissionHelper:
     def __init__(self, tc: transmissionrpc.Client) -> None:
         self._tc = tc
@@ -49,20 +71,54 @@ class TransmissionHelper:
 
         for item in exists_nodes:
             if item.name not in names:
-                if os.path.isfile(item.path):
-                    try:
-                        if not dryrun:
-                            os.unlink(item.path)
-                        print('removed %s' % item.path)
-                    except FileNotFoundError:
-                        pass
-                elif os.path.isdir(item.path):
-                    try:
-                        if not dryrun:
-                            shutil.rmtree(item.path)
-                        print('removed %s' % item.path)
-                    except FileNotFoundError:
-                        pass
+                remove(item.path, dryrun)
+
+    def cleanup_torrentsdir(self, torrents_dir, dryrun: bool):
+        try:
+            tor_filenames = os.listdir(torrents_dir)
+        except FileNotFoundError:
+            echo(f'unable list file from {torrents_dir!r}.')
+            return
+
+        # get files from disk before get torrents from transmission
+        # ensure no new torrents will be delete.
+        info_hash_map = {}
+        dup_tor_map = {}
+        for name in tor_filenames:
+            path = os.path.join(torrents_dir, name)
+            with open(path, 'rb') as f:
+                tor_body = bencodepy.decode(f.read())
+            magnet_info = tor_body.get(b'magnet-info')
+            if magnet_info:
+                # this is a magnet
+                info_hash: str = magnet_info[b'info_hash'].hex()
+            else:
+                info_hash: str = compute_info_hash(tor_body)
+            info_hash = info_hash.lower()
+            if info_hash in info_hash_map:
+                dup_tor_map.setdefault(info_hash, [info_hash_map[info_hash]]).append(name)
+            info_hash_map[info_hash] = path
+        echo(f'read {len(info_hash_map)} torrents from torrents dir.')
+
+        for info_hash in dup_tor_map:
+            echo(f'same info hash ({info_hash!r}) in multi-file:')
+            for name in dup_tor_map[info_hash]:
+                echo(f'  - {name}')
+
+        biths = set()
+        for tor in self._tc.get_torrents():
+            info_hash = tor.hashString.lower()
+            biths.add(info_hash)
+        echo(f'read {len(biths)} torrents from transmission.')
+
+        if biths.issubset(info_hash_map.keys()):
+            for info_hash in info_hash_map:
+                if info_hash not in biths:
+                    remove(info_hash_map[info_hash], dryrun=dryrun)
+        else:
+            for info_hash in biths:
+                if info_hash not in info_hash_map:
+                    echo(f'info hash {info_hash!r} is not exists in torrents_dir.')
 
 def load_conf(args: dict):
     conf_path = os.path.expanduser(
@@ -93,6 +149,7 @@ def load_conf(args: dict):
 @click_app
 class App:
     def __init__(self, dryrun: flag) -> None:
+        self._dryrun = dryrun
         self._conf = load_conf(dict(dryrun=dryrun))
         address = self._conf['address']
         port = self._conf['port']
@@ -101,12 +158,26 @@ class App:
 
     def cleanup_incompletedir(self):
         '''
-        cleanup the incomplete dir if any item did not exists in the transmission.
+        cleanup the incomplete dir if the item did not exists in the transmission.
         '''
         self._helper.cleanup_incompletedir(
             self._conf['incomplete_dir'],
             self._conf['dryrun']
         )
+
+    def cleanup_torrentsdir(self, ctx: Context):
+        '''
+        cleanup the torrents dir if the torrent did not exists in the transmission.
+
+        for more info, search 'deleted torrents keep coming back'
+        '''
+        conf_dir = self._conf.get('conf_dir')
+        if conf_dir is None:
+            ctx.fail('conf_dir is unset.')
+        if not os.path.isdir(conf_dir):
+            ctx.fail(f'conf_dir ({conf_dir!r}) is not a dir')
+        torrents_dir = os.path.join(self._conf['conf_dir'], 'torrents')
+        self._helper.cleanup_torrentsdir(torrents_dir, self._dryrun)
 
 def main(argv=None):
     if argv is None:

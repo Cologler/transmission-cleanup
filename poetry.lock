@@ -1,4 +1,12 @@
 [[package]]
+name = "bencode.py"
+version = "4.0.0"
+description = "Simple bencode parser (for Python 2, Python 3 and PyPy)"
+category = "main"
+optional = false
+python-versions = "*"
+
+[[package]]
 name = "click"
 version = "7.1.2"
 description = "Composable command line interface toolkit"
@@ -39,9 +47,13 @@ six = ">=1.1.0"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.8"
-content-hash = "9bd46beda758980c3d22c839bd698ef9dfa5ab1620db146e86d19ff036a17de9"
+content-hash = "db9fcfa90958a9c402d70efdc5b4490869f0d56e3d308d29b6afbf7c08f7facb"
 
 [metadata.files]
+"bencode.py" = [
+    {file = "bencode.py-4.0.0-py2.py3-none-any.whl", hash = "sha256:99c06a55764e85ffe81622fdf9ee78bd737bad3ea61d119784a54bb28860d962"},
+    {file = "bencode.py-4.0.0.tar.gz", hash = "sha256:2a24ccda1725a51a650893d0b63260138359eaa299bb6e7a09961350a2a6e05c"},
+]
 click = [
     {file = "click-7.1.2-py2.py3-none-any.whl", hash = "sha256:dacca89f4bfadd5de3d7489b7c8a566eee0d3676333fbb50030263894c38c0dc"},
     {file = "click-7.1.2.tar.gz", hash = "sha256:d2b5255c7c6349bc1bd1e59e08cd12acbbd63ce649f2588755783aa94dfb6b1a"},

@@ -9,6 +9,7 @@ license = "MIT"
 python = "^3.8"
 transmissionrpc = "^0.11"
 click-anno = "^0.1.4"
+"bencode.py" = "^4.0.0"
 
 [tool.poetry.dev-dependencies]
 
