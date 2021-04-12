@@ -60,13 +60,13 @@ def remove(path: str, dryrun: bool):
 
 class TransmissionHelper:
     def __init__(self, tc: transmissionrpc.Client) -> None:
-        self._tc = tc
+        self.tc = tc
 
     def cleanup_incompletedir(self, incomplete_dir, dryrun: bool):
         exists_nodes = collect_incomplete_items(incomplete_dir)
 
         names = set()
-        for tor in self._tc.get_torrents():
+        for tor in self.tc.get_torrents():
             names.add(tor.name)
 
         for item in exists_nodes:
@@ -106,7 +106,7 @@ class TransmissionHelper:
                 echo(f'  - {name}')
 
         biths = set()
-        for tor in self._tc.get_torrents():
+        for tor in self.tc.get_torrents():
             info_hash = tor.hashString.lower()
             biths.add(info_hash)
         echo(f'read {len(biths)} torrents from transmission.')
@@ -153,8 +153,8 @@ class App:
         self._conf = load_conf(dict(dryrun=dryrun))
         address = self._conf['address']
         port = self._conf['port']
-        self._tc = transmissionrpc.Client(address, port)
-        self._helper = TransmissionHelper(self._tc)
+        self.tc = transmissionrpc.Client(address, port)
+        self._helper = TransmissionHelper(self.tc)
 
     def cleanup_incompletedir(self):
         '''
@@ -179,14 +179,22 @@ class App:
         torrents_dir = os.path.join(self._conf['conf_dir'], 'torrents')
         self._helper.cleanup_torrentsdir(torrents_dir, self._dryrun)
 
+    def cleanup_finished(self, ctx: Context, delete_data: flag=False):
+        '''
+        remove all finished torrents.
+        '''
+        torrents = self._helper.tc.get_torrents(arguments=['id', 'status', 'isFinished'])
+        finished = []
+        for torrent in torrents:
+            if torrent.isFinished and torrent.status == 'stopped':
+                finished.append(torrent.id)
+        echo('total %d items will be remove' % len(finished))
+        self._helper.tc.remove_torrent(finished, delete_data=bool(delete_data), timeout=None)
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv
-    try:
-        App()
-    except Exception: # pylint: disable=W0703
-        traceback.print_exc()
-        if sys.stderr.isatty(): input('wait for read...')
+    App()
 
 if __name__ == '__main__':
     main()
