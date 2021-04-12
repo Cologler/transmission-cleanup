@@ -66,7 +66,7 @@ class TransmissionHelper:
         exists_nodes = collect_incomplete_items(incomplete_dir)
 
         names = set()
-        for tor in self.tc.get_torrents():
+        for tor in self.tc.get_torrents(arguments=['id', 'name']):
             names.add(tor.name)
 
         for item in exists_nodes:
@@ -106,7 +106,7 @@ class TransmissionHelper:
                 echo(f'  - {name}')
 
         biths = set()
-        for tor in self.tc.get_torrents():
+        for tor in self.tc.get_torrents(arguments=['id', 'hashString']):
             info_hash = tor.hashString.lower()
             biths.add(info_hash)
         echo(f'read {len(biths)} torrents from transmission.')
@@ -189,7 +189,8 @@ class App:
             if torrent.isFinished and torrent.status == 'stopped':
                 finished.append(torrent.id)
         echo('total %d items will be remove' % len(finished))
-        self._helper.tc.remove_torrent(finished, delete_data=bool(delete_data), timeout=None)
+        if not self._dryrun:
+            self._helper.tc.remove_torrent(finished, delete_data=bool(delete_data), timeout=None)
 
 def main(argv=None):
     if argv is None:
