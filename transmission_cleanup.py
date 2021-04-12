@@ -80,11 +80,25 @@ class TransmissionHelper:
             echo(f'unable list file from {torrents_dir!r}.')
             return
 
+        class _FileEntry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+                self.info_hash: str=None
+                self.torrents = []
+
+            @property
+            def path(self):
+                return os.path.join(torrents_dir, self.name)
+
         # get files from disk before get torrents from transmission
         # ensure no new torrents will be delete.
-        info_hash_map = {}
-        dup_tor_map = {}
+        file_entries: Dict[str, _FileEntry] = {}
+        file_entries_by_infohash: Dict[str, List[_FileEntry]] = {}
+
         for name in tor_filenames:
+            assert name not in file_entries
+            file_entries[name] = fe = _FileEntry(name)
+
             path = os.path.join(torrents_dir, name)
             with open(path, 'rb') as f:
                 tor_body = bencodepy.decode(f.read())
@@ -95,30 +109,52 @@ class TransmissionHelper:
             else:
                 info_hash: str = compute_info_hash(tor_body)
             info_hash = info_hash.lower()
-            if info_hash in info_hash_map:
-                dup_tor_map.setdefault(info_hash, [info_hash_map[info_hash]]).append(path)
-            info_hash_map[info_hash] = path
-        echo(f'read {len(info_hash_map)} torrents from torrents dir.')
 
-        for info_hash in dup_tor_map:
-            echo(f'same info hash ({info_hash!r}) in multi-file:')
-            for name in dup_tor_map[info_hash]:
-                echo(f'  - {name}')
+            fe.info_hash = info_hash
+            file_entries_by_infohash.setdefault(info_hash, []).append(fe)
+        echo(f'read {len(file_entries)} torrents from torrents dir.')
 
-        biths = set()
-        for tor in self.tc.get_torrents(arguments=['id', 'hashString']):
+        drift_torrents = []
+        torrents = self.tc.get_torrents(arguments=['id', 'hashString', 'torrentFile'])
+        for tor in torrents:
+            assert isinstance(tor.torrentFile, str)
             info_hash = tor.hashString.lower()
-            biths.add(info_hash)
-        echo(f'read {len(biths)} torrents from transmission.')
+            tfn = os.path.basename(tor.torrentFile)
+            fe = file_entries.get(tfn)
+            if fe:
+                fe.torrents.append(tor)
+            else:
+                if len(fels := file_entries_by_infohash.get(info_hash, ())) == 1:
+                    fels[0].torrents.append(tor)
+                else:
+                    drift_torrents.append(tor)
+        echo(f'read {len(torrents)} torrents from transmission.')
 
-        if biths.issubset(info_hash_map.keys()):
-            for info_hash in info_hash_map:
-                if info_hash not in biths:
-                    remove(info_hash_map[info_hash], dryrun=dryrun)
+        remove_list: List[str] = []
+
+        dupih = [(k, v) for k,v in file_entries_by_infohash.items() if len(v) > 1]
+        if dupih:
+            echo('the following *.torrent has the same info hash:')
+            for k, v in dupih:
+                echo(f'  - with info_hash({k!r})')
+                for e in v:
+                    linked = '&' if e.torrents else 'x'
+                    echo(f'    - ({linked}) {e.name}')
+                if sum(len(e.torrents) for e in v) == 1: # only one item linked
+                    remove_list.extend(e.path for e in v if not e.torrents)
+
+        if drift_torrents:
+            echo('the following item missing torrent files:')
+            for tor in drift_torrents:
+                echo(f'  - {tor.hashString.lower()}')
         else:
-            for info_hash in biths:
-                if info_hash not in info_hash_map:
-                    echo(f'info hash {info_hash!r} is not exists in torrents_dir.')
+            remove_list = [e.path for e in file_entries.values() if not e.torrents]
+            new_items_count = len(torrents) + len(remove_list) - len(tor_filenames)
+            if new_items_count == 0:
+                for item in remove_list:
+                    remove(item, dryrun=dryrun)
+            else:
+                echo(f'new {new_items_count} torrents added, abort!')
 
 def load_conf(args: dict):
     conf_path = os.path.expanduser(
