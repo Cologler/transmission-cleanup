@@ -15,7 +15,8 @@ import shutil
 import hashlib
 
 import bencodepy
-import transmissionrpc
+import transmission_rpc
+import requests
 from click import Context, echo
 from click_anno import click_app
 from click_anno.types import flag
@@ -59,7 +60,7 @@ def remove(path: str, dryrun: bool):
             pass
 
 class TransmissionHelper:
-    def __init__(self, tc: transmissionrpc.Client) -> None:
+    def __init__(self, tc: transmission_rpc.Client) -> None:
         self.tc = tc
 
     def cleanup_incompletedir(self, incomplete_dir, dryrun: bool):
@@ -182,14 +183,21 @@ def load_conf(args: dict):
         conf_from_json
     )
 
+def read_trackers(src: str):
+    resp = requests.get(src, timeout=10)
+    resp.raise_for_status()
+    return resp.text
+
 @click_app
 class App:
     def __init__(self, dryrun: flag) -> None:
         self._dryrun = dryrun
         self._conf = load_conf(dict(dryrun=dryrun))
-        address = self._conf['address']
-        port = self._conf['port']
-        self.tc = transmissionrpc.Client(address, port)
+        conn = {
+            'host': self._conf['address'],
+            'port': self._conf['port'],
+        }
+        self.tc = transmission_rpc.Client(**conn)
         self._helper = TransmissionHelper(self.tc)
 
     def cleanup_incompletedir(self):
