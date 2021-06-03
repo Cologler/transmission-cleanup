@@ -215,17 +215,20 @@ class App:
         torrents_dir = os.path.join(self._conf['conf_dir'], 'torrents')
         self._helper.cleanup_torrentsdir(torrents_dir, self._dryrun)
 
-    def cleanup_finished(self, ctx: Context, delete_data: flag=False):
+    def remove_finished(self, ctx: Context, delete_data: flag=False):
         '''
         remove all finished torrents.
         '''
-        torrents = self._helper.tc.get_torrents(arguments=['id', 'status', 'isFinished'])
+        torrents = self._helper.tc.get_torrents(arguments=['id', 'status', 'isFinished', 'doneDate'])
         finished = []
         for torrent in torrents:
             if torrent.isFinished and torrent.status == 'stopped':
                 finished.append(torrent.id)
+            elif torrent.doneDate > 0:
+                # files have been removed and the transmission have been restart
+                finished.append(torrent.id)
         echo('total %d items will be remove' % len(finished))
-        if not self._dryrun:
+        if finished and not self._dryrun:
             self._helper.tc.remove_torrent(finished, delete_data=bool(delete_data), timeout=None)
 
 def main(argv=None):
