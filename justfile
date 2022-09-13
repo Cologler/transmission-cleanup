@@ -1,2 +1,2 @@
 run *args:
-    poetry run python transmission_cleanup.py {{args}}
+    doppler run -- poetry run python transmission_cleanup.py {{args}}
