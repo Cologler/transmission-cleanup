@@ -17,7 +17,7 @@ import hashlib
 import bencodepy
 import transmission_rpc
 import requests
-from click import Context, echo
+from click import Context, echo, Abort
 from click_anno import click_app
 from click_anno.types import flag
 
@@ -177,11 +177,21 @@ def load_conf(args: dict):
     if incomplete_dir is not None:
         conf_from_env['incomplete_dir'] = incomplete_dir
 
-    return collections.ChainMap(
+    conf = collections.ChainMap(
         args,
         conf_from_env,
         conf_from_json
     )
+
+    if not conf.get('address'):
+        echo('Missing server value.')
+        raise Abort()
+
+    if not conf.get('port'):
+        echo('Missing port value.')
+        raise Abort()
+
+    return conf
 
 def read_trackers(src: str):
     resp = requests.get(src, timeout=10)
