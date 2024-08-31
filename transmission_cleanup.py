@@ -5,19 +5,17 @@
 #
 # ----------
 
-from typing import *
-import os
-import sys
-import traceback
 import collections
-import json
-import shutil
 import hashlib
+import json
+import os
+import shutil
+import sys
 
 import bencodepy
-import transmission_rpc
 import requests
-from click import Context, echo, Abort
+import transmission_rpc
+from click import Abort, Context, echo
 from click_anno import click_app
 from click_anno.types import flag
 
@@ -93,8 +91,8 @@ class TransmissionHelper:
 
         # get files from disk before get torrents from transmission
         # ensure no new torrents will be delete.
-        file_entries: Dict[str, _FileEntry] = {}
-        file_entries_by_infohash: Dict[str, List[_FileEntry]] = {}
+        file_entries: dict[str, _FileEntry] = {}
+        file_entries_by_infohash: dict[str, list[_FileEntry]] = {}
 
         for name in tor_filenames:
             assert name not in file_entries
@@ -131,7 +129,7 @@ class TransmissionHelper:
                     drift_torrents.append(tor)
         echo(f'read {len(torrents)} torrents from transmission.')
 
-        remove_list: List[str] = []
+        remove_list: list[str] = []
 
         dupih = [(k, v) for k,v in file_entries_by_infohash.items() if len(v) > 1]
         if dupih:
