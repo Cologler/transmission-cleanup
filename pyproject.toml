@@ -7,10 +7,9 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.8"
-click-anno = "^0.1.4"
 "bencode.py" = "^4.0.0"
-requests = "^2.25.1"
 transmission-rpc = "^3.2.5"
+typer = {extras = ["all"], version = "^0.12.5"}
 
 [tool.poetry.dev-dependencies]
 

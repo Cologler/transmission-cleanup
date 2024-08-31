@@ -5,38 +5,23 @@
 #
 # ----------
 
-import collections
 import hashlib
-import json
 import os
 import shutil
 import sys
+from functools import cached_property
+from typing import Annotated
 
 import bencodepy
-import requests
+import rich
 import transmission_rpc
-from click import Abort, Context, echo
-from click_anno import click_app
-from click_anno.types import flag
+from typer import Abort, Argument, Option, Typer
 
 # encoding is required.
 # if we run this on synology task scheduler, by default sys.getdefaultencoding() is ascii.
 # we may get file names from `os.listdir(incomplete_dir)` with bad encoding
 # their did not match torrent.name, but we cannot remove them because they still need.
 assert sys.getdefaultencoding() == 'utf-8', 'encoding is not utf-8'
-
-class IncompleteItem:
-    def __init__(self, incomplete_dir, name):
-        self.path = os.path.join(incomplete_dir, name)
-        if name.endswith('.part'):
-            self.name = name[:-5]
-        else:
-            self.name = name
-
-def collect_incomplete_items(incomplete_dir):
-    return [
-        IncompleteItem(incomplete_dir, x) for x in os.listdir(incomplete_dir)
-    ]
 
 def compute_info_hash(d: dict):
     return hashlib.sha1(bencodepy.encode(d[b"info"])).hexdigest()
@@ -61,196 +46,157 @@ class TransmissionHelper:
     def __init__(self, tc: transmission_rpc.Client) -> None:
         self.tc = tc
 
-    def cleanup_incompletedir(self, incomplete_dir, dryrun: bool):
-        exists_nodes = collect_incomplete_items(incomplete_dir)
 
-        names = set()
-        for tor in self.tc.get_torrents(arguments=['id', 'name']):
-            names.add(tor.name)
+app = Typer(help='Transmission Cleanup')
 
-        for item in exists_nodes:
-            if item.name not in names:
-                remove(item.path, dryrun)
 
-    def cleanup_torrentsdir(self, torrents_dir, dryrun: bool):
-        try:
-            tor_filenames = os.listdir(torrents_dir)
-        except FileNotFoundError:
-            echo(f'unable list file from {torrents_dir!r}.')
-            return
+@app.command(help='remove torrents from torrents dir if the torrent does not exists in the transmission.')
+def cleanup_torrentsdir(
+        host: Annotated[str, Argument(envvar="TRANSMISSION_HOST")],
+        port: Annotated[int, Argument(envvar="TRANSMISSION_PORT", min=1, max=65535)],
+        torrents_dir: Annotated[str, Argument(envvar="TRANSMISSION_TORRENTSDIR")],
+        dry_run: Annotated[bool, Option('--dry-run', help='Only print what would be done.')] = False,
+    ):
 
-        class _FileEntry:
-            def __init__(self, name: str) -> None:
-                self.name = name
-                self.info_hash: str=None
-                self.torrents = []
+    tc = transmission_rpc.Client(host=host, port=port)
 
-            @property
-            def path(self):
-                return os.path.join(torrents_dir, self.name)
+    try:
+        tor_filenames = os.listdir(torrents_dir)
+    except FileNotFoundError:
+        rich.print(f'[red]unable list file from {torrents_dir!r}.[/]')
+        raise Abort()
 
-        # get files from disk before get torrents from transmission
-        # ensure no new torrents will be delete.
-        file_entries: dict[str, _FileEntry] = {}
-        file_entries_by_infohash: dict[str, list[_FileEntry]] = {}
+    class _FileEntry:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.info_hash: str=None
+            self.torrents = []
 
-        for name in tor_filenames:
-            assert name not in file_entries
-            file_entries[name] = fe = _FileEntry(name)
+        @cached_property
+        def path(self):
+            return os.path.join(torrents_dir, self.name)
 
-            path = os.path.join(torrents_dir, name)
-            with open(path, 'rb') as f:
-                tor_body = bencodepy.decode(f.read())
-            magnet_info = tor_body.get(b'magnet-info')
-            if magnet_info:
-                # this is a magnet
-                info_hash: str = magnet_info[b'info_hash'].hex()
-            else:
-                info_hash: str = compute_info_hash(tor_body)
-            info_hash = info_hash.lower()
+    # get files from disk before get torrents from transmission
+    # ensure no new torrents will be delete.
+    file_entries: dict[str, _FileEntry] = {}
+    file_entries_by_infohash: dict[str, list[_FileEntry]] = {}
 
-            fe.info_hash = info_hash
-            file_entries_by_infohash.setdefault(info_hash, []).append(fe)
-        echo(f'read {len(file_entries)} torrents from torrents dir.')
+    for name in tor_filenames:
+        assert name not in file_entries
+        file_entries[name] = fe = _FileEntry(name)
 
-        drift_torrents = []
-        torrents = self.tc.get_torrents(arguments=['id', 'hashString', 'torrentFile'])
-        for tor in torrents:
-            assert isinstance(tor.torrentFile, str)
-            info_hash = tor.hashString.lower()
-            tfn = os.path.basename(tor.torrentFile)
-            fe = file_entries.get(tfn)
-            if fe:
-                fe.torrents.append(tor)
-            else:
-                if len(fels := file_entries_by_infohash.get(info_hash, ())) == 1:
-                    fels[0].torrents.append(tor)
-                else:
-                    drift_torrents.append(tor)
-        echo(f'read {len(torrents)} torrents from transmission.')
-
-        remove_list: list[str] = []
-
-        dupih = [(k, v) for k,v in file_entries_by_infohash.items() if len(v) > 1]
-        if dupih:
-            echo('the following *.torrent has the same info hash:')
-            for k, v in dupih:
-                echo(f'  - with info_hash({k!r})')
-                for e in v:
-                    linked = '&' if e.torrents else 'x'
-                    echo(f'    - ({linked}) {e.name}')
-                if sum(len(e.torrents) for e in v) == 1: # only one item linked
-                    remove_list.extend(e.path for e in v if not e.torrents)
-
-        if drift_torrents:
-            echo('the following item missing torrent files:')
-            for tor in drift_torrents:
-                echo(f'  - {tor.hashString.lower()}')
+        path = os.path.join(torrents_dir, name)
+        with open(path, 'rb') as f:
+            tor_body = bencodepy.decode(f.read())
+        magnet_info = tor_body.get(b'magnet-info')
+        if magnet_info:
+            # this is a magnet
+            info_hash: str = magnet_info[b'info_hash'].hex()
         else:
-            remove_list = [e.path for e in file_entries.values() if not e.torrents]
-            new_items_count = len(torrents) + len(remove_list) - len(tor_filenames)
-            if new_items_count == 0:
-                for item in remove_list:
-                    remove(item, dryrun=dryrun)
+            info_hash: str = compute_info_hash(tor_body)
+        info_hash = info_hash.lower()
+
+        fe.info_hash = info_hash
+        file_entries_by_infohash.setdefault(info_hash, []).append(fe)
+    rich.print(f'read {len(file_entries)} torrents from torrents dir.')
+
+    drift_torrents = []
+    torrents = tc.get_torrents(arguments=['id', 'hashString', 'torrentFile'])
+    for tor in torrents:
+        assert isinstance(tor.torrentFile, str)
+        info_hash = tor.hashString.lower()
+        tfn = os.path.basename(tor.torrentFile)
+        fe = file_entries.get(tfn)
+        if fe:
+            fe.torrents.append(tor)
+        else:
+            if len(fels := file_entries_by_infohash.get(info_hash, ())) == 1:
+                fels[0].torrents.append(tor)
             else:
-                echo(f'new {new_items_count} torrents added, abort!')
+                drift_torrents.append(tor)
+    rich.print(f'read {len(torrents)} torrents from transmission.')
 
-def load_conf(args: dict):
-    conf_path = os.path.expanduser(
-        os.path.join('~', '.config', 'transmission_cleanup', 'config.json')
-    )
-    conf_from_json = {}
-    if os.path.isfile(conf_path):
-        with open(conf_path, 'r') as fp:
-            conf_from_json = json.load(fp)
+    remove_list: list[str] = []
 
-    conf_from_env = {}
-    address = os.getenv('TRANSMISSION_ADDRESS')
-    if address is not None:
-        conf_from_env['address'] = address
-    port = os.getenv('TRANSMISSION_PORT')
-    if port is not None:
-        conf_from_env['port'] = int(port)
-    incomplete_dir = os.getenv('TRANSMISSION_INCOMPLETEDIR')
-    if incomplete_dir is not None:
-        conf_from_env['incomplete_dir'] = incomplete_dir
+    dupih = [(k, v) for k,v in file_entries_by_infohash.items() if len(v) > 1]
+    if dupih:
+        rich.print('the following *.torrent has the same info hash:')
+        for k, v in dupih:
+            rich.print(f'  - with info_hash({k!r})')
+            for e in v:
+                linked = '&' if e.torrents else 'x'
+                rich.print(f'    - ({linked}) {e.name}')
+            if sum(len(e.torrents) for e in v) == 1: # only one item linked
+                remove_list.extend(e.path for e in v if not e.torrents)
 
-    conf = collections.ChainMap(
-        args,
-        conf_from_env,
-        conf_from_json
-    )
+    if drift_torrents:
+        rich.print('the following item missing torrent files:')
+        for tor in drift_torrents:
+            rich.print(f'  - {tor.hashString.lower()}')
+    else:
+        remove_list = [e.path for e in file_entries.values() if not e.torrents]
+        new_items_count = len(torrents) + len(remove_list) - len(tor_filenames)
+        if new_items_count == 0:
+            for item in remove_list:
+                remove(item, dryrun=dry_run)
+        else:
+            rich.print(f'new {new_items_count} torrents added, abort!')
 
-    if not conf.get('address'):
-        echo('Missing server value.')
-        raise Abort()
 
-    if not conf.get('port'):
-        echo('Missing port value.')
-        raise Abort()
+@app.command(help='remove incomplete files from incomplete dir if no torrent linked to it.')
+def cleanup_incompletedir(
+        host: Annotated[str, Argument(envvar="TRANSMISSION_HOST")],
+        port: Annotated[int, Argument(envvar="TRANSMISSION_PORT", min=1, max=65535)],
+        incomplete_dir: Annotated[str, Argument(envvar="TRANSMISSION_INCOMPLETEDIR")],
+        dry_run: Annotated[bool, Option('--dry-run', help='Only print what would be done.')] = False,
+    ):
 
-    return conf
+    class IncompleteItem:
+        def __init__(self, name):
+            self.path = os.path.join(incomplete_dir, name)
+            self.name = name[:-5] if name.endswith('.part') else name
 
-def read_trackers(src: str):
-    resp = requests.get(src, timeout=10)
-    resp.raise_for_status()
-    return resp.text
+    # must collect before fetch items from transmission client
+    incomplete_items = [IncompleteItem(x) for x in os.listdir(incomplete_dir)]
 
-@click_app
-class App:
-    def __init__(self, dryrun: flag) -> None:
-        self._dryrun = dryrun
-        self._conf = load_conf(dict(dryrun=dryrun))
-        conn = {
-            'host': self._conf['address'],
-            'port': self._conf['port'],
-        }
-        self.tc = transmission_rpc.Client(**conn)
-        self._helper = TransmissionHelper(self.tc)
+    tc = transmission_rpc.Client(host=host, port=port)
+    names = {tor.name for tor in tc.get_torrents(arguments=['id', 'name'])}
 
-    def cleanup_incompletedir(self):
-        '''
-        cleanup the incomplete dir if the item did not exists in the transmission.
-        '''
-        self._helper.cleanup_incompletedir(
-            self._conf['incomplete_dir'],
-            self._conf['dryrun']
-        )
+    not_exists = [x for x in incomplete_items if x.name not in names]
 
-    def cleanup_torrentsdir(self, ctx: Context):
-        '''
-        cleanup the torrents dir if the torrent did not exists in the transmission.
+    rich.print(f'total {len(not_exists)} items will be remove.')
+    rich.print('\n'.join(f'   {x.name}' for x in not_exists))
+    for item in not_exists:
+        remove(item.path, dry_run)
 
-        for more info, search 'deleted torrents keep coming back'
-        '''
-        conf_dir = self._conf.get('conf_dir')
-        if conf_dir is None:
-            ctx.fail('conf_dir is unset.')
-        if not os.path.isdir(conf_dir):
-            ctx.fail(f'conf_dir ({conf_dir!r}) is not a dir')
-        torrents_dir = os.path.join(self._conf['conf_dir'], 'torrents')
-        self._helper.cleanup_torrentsdir(torrents_dir, self._dryrun)
 
-    def remove_finished(self, ctx: Context, delete_data: flag=False):
-        '''
-        remove all finished torrents.
-        '''
-        torrents = self._helper.tc.get_torrents(arguments=['id', 'status', 'isFinished', 'doneDate'])
-        finished = []
-        for torrent in torrents:
-            if torrent.isFinished and torrent.status == 'stopped':
-                finished.append(torrent.id)
-            elif torrent.doneDate > 0:
-                # files have been removed and the transmission have been restart
-                finished.append(torrent.id)
-        echo('total %d items will be remove' % len(finished))
-        if finished and not self._dryrun:
-            self._helper.tc.remove_torrent(finished, delete_data=bool(delete_data), timeout=None)
+@app.command(help='remove all finished and stopped torrents.')
+def remove_finished(
+        host: Annotated[str, Argument(envvar="TRANSMISSION_HOST")],
+        port: Annotated[int, Argument(envvar="TRANSMISSION_PORT", min=1, max=65535)],
+        delete_data: Annotated[bool, Option('--delete-data', help='Delete downloaded files.')] = False,
+        dry_run: Annotated[bool, Option('--dry-run', help='Only print what would be done.')] = False,
+    ):
+
+    def is_finished(torrent):
+        # `.isFinished` is False for removed torrents
+        return torrent.doneDate > 0 and torrent.status == 'stopped'
+
+    tc = transmission_rpc.Client(host=host, port=port)
+    torrents = tc.get_torrents(arguments=['id', 'name', 'status', 'isFinished', 'doneDate'])
+    finished = [x for x in torrents if is_finished(x)]
+
+    rich.print(f'total {len(finished)} items will be remove.')
+    rich.print('\n'.join(f'   {x.name}' for x in finished))
+    if not dry_run and finished:
+        tc.remove_torrent([x.id for x in finished], delete_data=bool(delete_data), timeout=None)
+
 
 def main(argv=None):
     if argv is None:
         argv = sys.argv
-    App()
+
+    app()
 
 if __name__ == '__main__':
     main()
