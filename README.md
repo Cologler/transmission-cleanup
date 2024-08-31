@@ -1,21 +1,22 @@
 # transmission-cleanup
 
-cleanup transmission incomplete files.
+A helper tool to cleanup transmission files.
 
 ## Usage
 
-1. create a config json file `~/.config/transmission_cleanup/config.json`.
-1. run `poetry install` to install deps.
-1. run `poetry run python transmission_cleanup.py` to cleanup.
+``` shell
+ Usage: transmission_cleanup.py [OPTIONS] COMMAND [ARGS]...
 
-## Config
+ Transmission Cleanup
 
-`~/.config/transmission_cleanup/config.json`:
-
-``` json
-{
-    "address": ...,
-    "port": ...,
-    "incomplete_dir": ...
-}
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --install-completion          Install completion for the current shell.                                              │
+│ --show-completion             Show completion for the current shell, to copy it or customize the installation.       │
+│ --help                        Show this message and exit.                                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ cleanup-incompletedir   remove incomplete files from incomplete dir if no torrent linked to it.                      │
+│ cleanup-torrentsdir     remove torrents from torrents dir if the torrent does not exists in the transmission.        │
+│ remove-finished         remove all finished and stopped torrents.                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
