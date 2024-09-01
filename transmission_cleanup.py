@@ -11,6 +11,10 @@ import shutil
 import sys
 from functools import cached_property
 from typing import Annotated
+from pathlib import Path
+from itertools import groupby
+from dataclasses import dataclass
+import re
 
 import bencodepy
 import rich
@@ -22,9 +26,6 @@ from typer import Abort, Argument, Option, Typer
 # we may get file names from `os.listdir(incomplete_dir)` with bad encoding
 # their did not match torrent.name, but we cannot remove them because they still need.
 assert sys.getdefaultencoding() == 'utf-8', 'encoding is not utf-8'
-
-def compute_info_hash(d: dict):
-    return hashlib.sha1(bencodepy.encode(d[b"info"])).hexdigest()
 
 def remove(path: str, dryrun: bool):
     if os.path.isfile(path):
@@ -42,9 +43,18 @@ def remove(path: str, dryrun: bool):
         except FileNotFoundError:
             pass
 
-class TransmissionHelper:
-    def __init__(self, tc: transmission_rpc.Client) -> None:
-        self.tc = tc
+def compute_info_hash(d: dict):
+    return hashlib.sha1(bencodepy.encode(d[b"info"])).hexdigest()
+
+def torrent_get_infohash(path: Path) -> str:
+    # get infohash from transmission .torrent file
+    content = bencodepy.decode(path.read_bytes())
+    if magnet_info := content.get(b'magnet-info'):
+        # this is a magnet
+        info_hash: str = magnet_info[b'info_hash'].hex()
+    else:
+        info_hash: str = compute_info_hash(content)
+    return info_hash.lower()
 
 
 app = Typer(help='Transmission Cleanup')
@@ -58,89 +68,80 @@ def cleanup_torrentsdir(
         dry_run: Annotated[bool, Option('--dry-run', help='Only print what would be done.')] = False,
     ):
 
-    tc = transmission_rpc.Client(host=host, port=port)
-
-    try:
-        tor_filenames = os.listdir(torrents_dir)
-    except FileNotFoundError:
-        rich.print(f'[red]unable list file from {torrents_dir!r}.[/]')
-        raise Abort()
-
-    class _FileEntry:
-        def __init__(self, name: str) -> None:
-            self.name = name
-            self.info_hash: str=None
-            self.torrents = []
+    @dataclass
+    class LocalTorrentFile:
+        path: Path
+        info_hash: str
 
         @cached_property
-        def path(self):
-            return os.path.join(torrents_dir, self.name)
+        def name(self):
+            return self.path.name
+
+    tc = transmission_rpc.Client(host=host, port=port)
 
     # get files from disk before get torrents from transmission
     # ensure no new torrents will be delete.
-    file_entries: dict[str, _FileEntry] = {}
-    file_entries_by_infohash: dict[str, list[_FileEntry]] = {}
+    rich.print(f'reading torrents from {torrents_dir} ...')
+    local_torrents_files = list(Path(torrents_dir).iterdir())
 
-    for name in tor_filenames:
-        assert name not in file_entries
-        file_entries[name] = fe = _FileEntry(name)
+    local_torrents: list[LocalTorrentFile] = []
 
-        path = os.path.join(torrents_dir, name)
-        with open(path, 'rb') as f:
-            tor_body = bencodepy.decode(f.read())
-        magnet_info = tor_body.get(b'magnet-info')
-        if magnet_info:
-            # this is a magnet
-            info_hash: str = magnet_info[b'info_hash'].hex()
-        else:
-            info_hash: str = compute_info_hash(tor_body)
-        info_hash = info_hash.lower()
+    for item in local_torrents_files:
+        if item.is_file():
+            if item.suffix == '.torrent':
+                info_hash = torrent_get_infohash(item)
 
-        fe.info_hash = info_hash
-        file_entries_by_infohash.setdefault(info_hash, []).append(fe)
-    rich.print(f'read {len(file_entries)} torrents from torrents dir.')
+            elif item.suffix == '.magnet':
+                # this is a magnet
+                content = item.read_text()
+                if match := re.search(r'xt=urn:btih:(?P<ih>[0-9a-f]+)(?:&|$)', content, re.IGNORECASE):
+                    info_hash = match.group('ih').lower()
+                else:
+                    rich.print(f'[red]Unknown infohash from magnet: {content!r}[/]')
+                    raise Abort()
 
-    drift_torrents = []
-    torrents = tc.get_torrents(arguments=['id', 'hashString', 'torrentFile'])
-    for tor in torrents:
-        assert isinstance(tor.torrentFile, str)
-        info_hash = tor.hashString.lower()
-        tfn = os.path.basename(tor.torrentFile)
-        fe = file_entries.get(tfn)
-        if fe:
-            fe.torrents.append(tor)
-        else:
-            if len(fels := file_entries_by_infohash.get(info_hash, ())) == 1:
-                fels[0].torrents.append(tor)
             else:
-                drift_torrents.append(tor)
-    rich.print(f'read {len(torrents)} torrents from transmission.')
+                rich.print(f'[red]unknown file type: {item.name!r}[/]')
+                raise Abort()
 
-    remove_list: list[str] = []
+            local_torrents.append(LocalTorrentFile(item, info_hash))
 
-    dupih = [(k, v) for k,v in file_entries_by_infohash.items() if len(v) > 1]
-    if dupih:
-        rich.print('the following *.torrent has the same info hash:')
-        for k, v in dupih:
-            rich.print(f'  - with info_hash({k!r})')
-            for e in v:
-                linked = '&' if e.torrents else 'x'
-                rich.print(f'    - ({linked}) {e.name}')
-            if sum(len(e.torrents) for e in v) == 1: # only one item linked
-                remove_list.extend(e.path for e in v if not e.torrents)
+    rich.print(f'Load {len(local_torrents_files)} torrents from torrents dir.')
 
-    if drift_torrents:
-        rich.print('the following item missing torrent files:')
-        for tor in drift_torrents:
-            rich.print(f'  - {tor.hashString.lower()}')
+    server_torrents = tc.get_torrents(arguments=['id', 'hashString', 'torrentFile'])
+    rich.print(f'Fetch {len(server_torrents)} torrents from transmission server.')
+
+    server_torrents_infohash = {x.hashString.lower(): x for x in server_torrents}
+    def is_local_in_server(t: LocalTorrentFile):
+        if t.info_hash is not None and t.info_hash in server_torrents_infohash:
+            return True
+        return False
+
+    local_torrents_infohashs = {x.info_hash for x in local_torrents}
+    local_torrents_names = {x.name for x in local_torrents}
+    def is_server_in_local(t: transmission_rpc.Torrent):
+        if os.path.basename(t.torrentFile) in local_torrents_names:
+            return True
+        if info_hash in local_torrents_infohashs:
+            return True
+        return False
+
+    if notin_local := [x for x in server_torrents if not is_server_in_local(x)]:
+        rich.print('The following item missing local torrent files:')
+        for x in notin_local:
+            rich.print(f'   - {x.hashString.lower()}')
     else:
-        remove_list = [e.path for e in file_entries.values() if not e.torrents]
-        new_items_count = len(torrents) + len(remove_list) - len(tor_filenames)
+        remove_list = [e.path for e in local_torrents if not is_local_in_server(e)]
+        if not remove_list:
+            rich.print('All local torrents are linked to server task.')
+            return
+        new_items_count = len(server_torrents) + len(remove_list) - len(local_torrents_files)
         if new_items_count == 0:
             for item in remove_list:
                 remove(item, dryrun=dry_run)
         else:
-            rich.print(f'new {new_items_count} torrents added, abort!')
+            rich.print(f'Found {new_items_count} new torrents added, abort!')
+            raise Abort()
 
 
 @app.command(help='remove incomplete files from incomplete dir if no torrent linked to it.')
